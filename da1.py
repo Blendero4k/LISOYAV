@@ -1,113 +1,60 @@
-import requests
-import json
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
 import time
-from urllib.parse import urlencode
 
-def get_product_info(article):
-    """Получаем информацию о товаре с обходом блокировок"""
-    url = f"https://card.wb.ru/cards/detail?{urlencode({'nm': article, 'dest': -1257786})}"
-    
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'application/json',
-        'Referer': f'https://www.wildberries.ru/catalog/{article}/detail.aspx'
-    }
-    
+def parse_wildberries_reviews(article_number, output_file='reviews.txt'):
+    chrome_options = Options()
+    chrome_options.add_argument("--headless")
+    chrome_options.add_argument("--disable-blink-features=AutomationControlled")
+    chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36")
+    service = Service(executable_path='chromedriver')
+    driver = webdriver.Chrome(service=service, options=chrome_options)
     try:
-        response = requests.get(url, headers=headers, timeout=15)
-        if response.status_code == 200:
-            data = response.json()
-            if data.get('data', {}).get('products'):
-                return data['data']['products'][0]
-        
-        # Пробуем альтернативный API
-        alt_url = f"https://wbx-content.wildberries.ru/v1/cards/detail?nm={article}"
-        response = requests.get(alt_url, headers=headers, timeout=15)
-        if response.status_code == 200:
-            data = response.json()
-            if data.get('data', {}).get('products'):
-                return data['data']['products'][0]
+        url = f"https://www.wildberries.ru/catalog/{article_number}/detail.aspx"
+        driver.get(url)
+        time.sleep(3)
+        try:
+            reviews_button = WebDriverWait(driver, 10).until(
+                EC.presence_of_element_located((By.CSS_SELECTOR, "button[data-link='html{product^reviews}']"))
+            )
+            reviews_button.click()
+            time.sleep(2)
+        except Exception as e:
+            print(f"Не удалось найти кнопку отзывов: {e}")
+            return
+        driver.execute_script("window.scrollBy(0, 500);")
+        time.sleep(2)
+        reviews = []
+        review_elements = driver.find_elements(By.CSS_SELECTOR, "div.feedback__item")[:10]
+        for i, review in enumerate(review_elements, 1):
+            try:
+                author = review.find_element(By.CSS_SELECTOR, "span.feedback__name").text.strip()
+                date = review.find_element(By.CSS_SELECTOR, "span.feedback__date").text.strip()
+                text_element = review.find_element(By.CSS_SELECTOR, "p.feedback__text")
+                text = text_element.text.strip()
+                rating = len(review.find_elements(By.CSS_SELECTOR, "span.feedback__star.feedback__star--active"))
+                reviews.append(f"Отзыв {i}:\nАвтор: {author}\nДата: {date}\nРейтинг: {rating}/5\nТекст: {text}\n")
+            except Exception as e:
+                print(f"Ошибка при парсинге отзыва {i}: {e}")
+                continue
+        with open(output_file, 'w', encoding='utf-8') as f:
+            if reviews:
+                f.write(f"Отзывы на товар с артикулом {article_number}:\n\n")
+                f.write("\n".join(reviews))
+                print(f"Успешно сохранено {len(reviews)} отзывов в файл {output_file}")
+            else:
+                f.write("Не удалось найти отзывы для данного товара.")
+                print("Не удалось найти отзывы для данного товара.")
                 
     except Exception as e:
-        print(f"Ошибка запроса: {str(e)}")
-    
-    return None
-
-def get_feedbacks(product_id, limit=10):
-    """Получаем отзывы с обходом блокировок"""
-    vol = product_id // 100000
-    part = product_id // 1000
-    
-    # Пробуем несколько серверов с отзывами
-    feedback_servers = [
-        f"https://feedbacks1.wb.ru/feedbacks/{vol}/{part}/{product_id}",
-        f"https://feedbacks2.wb.ru/feedbacks/{vol}/{part}/{product_id}",
-        f"https://feedbacks.wb.ru/feedbacks/{vol}/{part}/{product_id}"
-    ]
-    
-    for server in feedback_servers:
-        try:
-            response = requests.get(server, timeout=10)
-            if response.status_code == 200:
-                feedbacks = response.json().get('feedbacks', [])[:limit]
-                if feedbacks:
-                    return feedbacks
-        except:
-            continue
-    
-    return []
-
-def save_feedbacks(article, feedbacks):
-    """Сохраняем отзывы в файл"""
-    with open('reviews.txt', 'w', encoding='utf-8') as f:
-        if not feedbacks:
-            f.write(f"Для товара {article} не найдено отзывов\n")
-            return
-        
-        f.write(f"Последние отзывы на товар {article}:\n\n")
-        for i, fb in enumerate(feedbacks, 1):
-            rating = int(fb.get('productValuation', 0))
-            f.write(f"★ {'⭐' * rating}\n")  # Исправленная строка
-            f.write(f"Дата: {fb.get('createdDate', 'не указана')}\n")
-            f.write(f"Плюсы: {fb.get('pros', 'нет информации')}\n")
-            f.write(f"Минусы: {fb.get('cons', 'нет информации')}\n")
-            f.write(f"Отзыв: {fb.get('text', 'без комментария')}\n")
-            f.write("-"*50 + "\n\n")
-
-def main():
-    article = input("Введите артикул товара с Wildberries: ")
-    
-    print("\n⌛ Получаем информацию о товаре...")
-    
-    # Добавляем задержку перед запросом
-    time.sleep(1)
-    
-    product = get_product_info(article)
-    if not product:
-        print("\n❌ Товар не найден или доступ ограничен")
-        print("Что можно сделать:")
-        print("1. Проверьте артикул на сайте WB")
-        print("2. Попробуйте другой артикул (например, 14976090)")
-        print("3. Используйте VPN/прокси")
-        with open('reviews.txt', 'w', encoding='utf-8') as f:
-            f.write(f"Не удалось получить данные для артикула {article}\n")
-        return
-    
-    print(f"✔ Найден товар: {product.get('name')}")
-    print("⌛ Получаем отзывы...")
-    
-    feedbacks = get_feedbacks(product['id'])
-    save_feedbacks(article, feedbacks)
-    
-    print(f"\n✅ Готово! Сохранено {len(feedbacks)} отзывов в файл 'reviews.txt'")
-    print("Открываю файл с отзывами...")
-    
-    # Пытаемся открыть файл
-    try:
-        import os
-        os.startfile('reviews.txt')
-    except:
-        print("Файл сохранен в текущей директории")
+        print(f"Произошла ошибка: {e}")
+    finally:
+        driver.quit()
 
 if __name__ == "__main__":
-    main()
+    article = input("Введите артикул товара с Wildberries: ")
+    parse_wildberries_reviews(article)
